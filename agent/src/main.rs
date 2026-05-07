@@ -1,11 +1,36 @@
 use anyhow::Result;
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use shared::{MetricsReport, SystemMetrics, UserResourceUsage};
+use std::collections::HashMap;
 use std::time::Duration;
-use sysinfo::System;
-use tracing::{error, info};
+use tracing::{debug, error, info};
+use tracing::level_filters::LevelFilter;
 use uuid::Uuid;
+
+const SAMPLE_INTERVAL_MS: u64 = 500;
+const DEFAULT_REPORT_INTERVAL_SECS: u64 = 10;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(value: LogLevel) -> Self {
+        match value {
+            LogLevel::Trace => LevelFilter::TRACE,
+            LogLevel::Debug => LevelFilter::DEBUG,
+            LogLevel::Info => LevelFilter::INFO,
+            LogLevel::Warn => LevelFilter::WARN,
+            LogLevel::Error => LevelFilter::ERROR,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Resource Monitor Agent")]
@@ -14,21 +39,108 @@ struct Args {
     #[arg(short, long, default_value = "http://localhost:8081")]
     manager_url: String,
 
-    /// リポート間隔（秒）
-    #[arg(short, long, default_value = "1")]
+    /// テレメトリ送信間隔（秒）
+    #[arg(short, long, default_value_t = DEFAULT_REPORT_INTERVAL_SECS)]
     interval: u64,
 
     /// マシンID（指定しない場合はホスト名を使用）
     #[arg(short, long)]
     machine_id: Option<String>,
+
+    /// ログレベル
+    #[arg(long, value_enum, default_value_t = LogLevel::Info)]
+    log_level: LogLevel,
+}
+
+#[derive(Default)]
+struct UserAggregation {
+    cpu_sum: f64,
+    memory_bytes_sum: u64,
+}
+
+#[derive(Default)]
+struct MetricsAccumulator {
+    sample_count: u64,
+    cpu_usage_sum: f64,
+    memory_usage_sum: f64,
+    memory_used_sum: u64,
+    memory_total_last: u64,
+    users: HashMap<String, UserAggregation>,
+}
+
+impl MetricsAccumulator {
+    fn add_sample(&mut self, metrics: &SystemMetrics) {
+        self.sample_count += 1;
+        self.cpu_usage_sum += metrics.cpu_usage;
+        self.memory_usage_sum += metrics.memory_usage;
+        self.memory_used_sum += metrics.memory_used;
+        self.memory_total_last = metrics.memory_total;
+
+        for user in &metrics.top_users {
+            let entry = self.users.entry(user.username.clone()).or_default();
+            entry.cpu_sum += user.cpu_percentage;
+            entry.memory_bytes_sum += user.memory_bytes;
+        }
+    }
+
+    fn build_averaged_metrics(&self, machine_id: &str, hostname: &str) -> Option<SystemMetrics> {
+        if self.sample_count == 0 {
+            return None;
+        }
+
+        let denominator = self.sample_count as f64;
+        let memory_total = self.memory_total_last;
+        let mut top_users: Vec<UserResourceUsage> = self
+            .users
+            .iter()
+            .map(|(username, agg)| {
+                let cpu_percentage = agg.cpu_sum / denominator;
+                let memory_bytes = (agg.memory_bytes_sum as f64 / denominator).round() as u64;
+                let memory_percentage = if memory_total > 0 {
+                    ((memory_bytes as f64 / memory_total as f64) * 100.0).min(100.0)
+                } else {
+                    0.0
+                };
+
+                UserResourceUsage {
+                    username: username.clone(),
+                    cpu_percentage,
+                    memory_percentage,
+                    memory_bytes,
+                }
+            })
+            .collect();
+
+        top_users.sort_by(|a, b| {
+            b.cpu_percentage
+                .partial_cmp(&a.cpu_percentage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        top_users.truncate(3);
+
+        Some(SystemMetrics {
+            machine_id: machine_id.to_string(),
+            hostname: hostname.to_string(),
+            cpu_usage: self.cpu_usage_sum / denominator,
+            memory_usage: self.memory_usage_sum / denominator,
+            memory_used: (self.memory_used_sum as f64 / denominator).round() as u64,
+            memory_total,
+            top_users,
+            timestamp: Utc::now(),
+        })
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // ログを初期化
-    tracing_subscriber::fmt::init();
-
     let args = Args::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::from(args.log_level))
+        .init();
     info!("Resource Monitor Agent starting...");
 
     let hostname = hostname::get()
@@ -51,7 +163,12 @@ async fn main() -> Result<()> {
     );
 
     let client = reqwest::Client::new();
-    let interval = Duration::from_secs(args.interval);
+    let report_interval = Duration::from_secs(args.interval);
+    let sample_interval = Duration::from_millis(SAMPLE_INTERVAL_MS);
+    info!(
+        "Sampling every {}ms, reporting averaged metrics every {}s",
+        SAMPLE_INTERVAL_MS, args.interval
+    );
 
     // System インスタンスを事前に初期化してCPU測定用の基準値を作成
     let mut sys = sysinfo::System::new_all();
@@ -59,21 +176,58 @@ async fn main() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
     sys.refresh_all();
 
+    let mut sample_ticker = tokio::time::interval(sample_interval);
+    let mut report_started_at = tokio::time::Instant::now();
+    let mut accumulator = MetricsAccumulator::default();
+
     loop {
+        sample_ticker.tick().await;
+
         match collect_metrics(&machine_id, &hostname, &mut sys) {
             Ok(metrics) => {
+                let sampled_top_users = metrics
+                    .top_users
+                    .iter()
+                    .map(|user| {
+                        format!(
+                            "{}: cpu={:.1}%, mem={:.1}%({:.2}GB)",
+                            user.username,
+                            user.cpu_percentage,
+                            user.memory_percentage,
+                            user.memory_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                debug!(
+                    "Sampled metrics - machine={}, cpu={:.1}%, mem={:.1}% ({:.2}GB/{:.2}GB), top_users=[{}]",
+                    metrics.machine_id,
+                    metrics.cpu_usage,
+                    metrics.memory_usage,
+                    metrics.memory_used as f64 / 1024.0 / 1024.0 / 1024.0,
+                    metrics.memory_total as f64 / 1024.0 / 1024.0 / 1024.0,
+                    sampled_top_users
+                );
+                accumulator.add_sample(&metrics);
+            }
+            Err(e) => {
+                error!("Failed to collect metrics: {:?}", e);
+            }
+        }
+
+        if report_started_at.elapsed() >= report_interval {
+            if let Some(metrics) = accumulator.build_averaged_metrics(&machine_id, &hostname) {
                 let report = MetricsReport {
                     metrics: metrics.clone(),
                     agent_version: env!("CARGO_PKG_VERSION").to_string(),
                 };
 
-                // メトリクスをマネージャーに送信
                 let url = format!("{}/api/metrics/report", &args.manager_url);
                 match client.post(&url).json(&report).send().await {
                     Ok(response) => {
                         if response.status().is_success() {
                             info!(
-                                "Metrics sent successfully - CPU: {:.1}%, Memory: {:.1}%",
+                                "Averaged metrics sent - CPU: {:.1}%, Memory: {:.1}%",
                                 metrics.cpu_usage, metrics.memory_usage
                             );
                         } else {
@@ -84,13 +238,13 @@ async fn main() -> Result<()> {
                         error!("Failed to send metrics: {:?}", e);
                     }
                 }
+            } else {
+                error!("No samples collected during report window");
             }
-            Err(e) => {
-                error!("Failed to collect metrics: {:?}", e);
-            }
-        }
 
-        tokio::time::sleep(interval).await;
+            accumulator.reset();
+            report_started_at = tokio::time::Instant::now();
+        }
     }
 }
 
@@ -113,7 +267,7 @@ fn collect_metrics(
     };
 
     // ユーザーごとのリソース使用を計算
-    let top_users = calculate_user_resources(sys, memory_total, cpu_usage);
+    let top_users = calculate_user_resources(sys, memory_total, memory_used, cpu_usage);
 
     Ok(SystemMetrics {
         machine_id: machine_id.to_string(),
@@ -169,11 +323,11 @@ fn get_username_for_uid(uid: &sysinfo::Uid) -> String {
 fn calculate_user_resources(
     sys: &sysinfo::System,
     total_memory: u64,
-    _total_cpu_usage: f64,
+    memory_used: u64,
+    machine_cpu_usage: f64,
 ) -> Vec<UserResourceUsage> {
-    use std::collections::HashMap;
-
     let mut user_resources: HashMap<String, (f64, u64)> = HashMap::new();
+    let mut total_process_cpu = 0.0f64;
 
     // プロセスごとにユーザー単位で集計
     for process in sys.processes().values() {
@@ -182,25 +336,39 @@ fn calculate_user_resources(
             let username = get_username_for_uid(user_id);
 
             let cpu_percent = process.cpu_usage() as f64;
-            // process.memory() は KiB（キビバイト）で返される
-            let mem_bytes = process.memory() * 1024;
+            // sysinfo 0.30 の process.memory() はバイト単位
+            let mem_bytes = process.memory();
 
             let entry = user_resources.entry(username).or_insert((0.0, 0));
             entry.0 += cpu_percent;
             entry.1 += mem_bytes;
+            total_process_cpu += cpu_percent;
         }
     }
+
+    let total_user_memory: u64 = user_resources.values().map(|(_, mem)| *mem).sum();
 
     // ユーザーを CPU 使用率でソート（CPU使用量だけで判定）
     let mut users: Vec<_> = user_resources
         .into_iter()
         .map(|(username, (cpu, mem))| {
-            // CPU使用率：process.cpu_usage()はパーセンテージで返される
-            let cpu_percentage = cpu.min(100.0);
-            // メモリ使用率：mem は既にバイト単位、total_memory も KiB なので KiB に合わせる
+            // 各ユーザーの process CPU 合算を、全 process 合算に対する比率で
+            // マシン全体CPU使用率へ配分する（総和が machine_cpu_usage に近づく）
+            let cpu_percentage = if total_process_cpu > 0.0 {
+                ((cpu / total_process_cpu) * machine_cpu_usage).min(100.0)
+            } else {
+                0.0
+            };
+
+            // ユーザーごとの生メモリ値を割合化し、マシン実使用メモリへ配分して整合性を保つ
+            let memory_bytes = if total_user_memory > 0 {
+                ((mem as f64 / total_user_memory as f64) * memory_used as f64).round() as u64
+            } else {
+                0
+            };
+
             let memory_percentage = if total_memory > 0 {
-                let mem_kib = mem / 1024;
-                ((mem_kib as f64 / total_memory as f64) * 100.0).min(100.0)
+                ((memory_bytes as f64 / total_memory as f64) * 100.0).min(100.0)
             } else {
                 0.0
             };
@@ -209,7 +377,7 @@ fn calculate_user_resources(
                 username,
                 cpu_percentage,
                 memory_percentage,
-                memory_bytes: mem,
+                memory_bytes,
             }
         })
         .collect();
@@ -222,47 +390,4 @@ fn calculate_user_resources(
     });
 
     users.into_iter().take(3).collect()
-}
-
-/// ディスク使用量を取得
-#[cfg(target_os = "macos")]
-fn get_disk_usage() -> Result<(u64, u64)> {
-    use std::process::Command;
-    let output = Command::new("df").arg("-k").arg("/").output()?;
-    let stdout = String::from_utf8(output.stdout)?;
-    let lines: Vec<&str> = stdout.lines().collect();
-    if lines.len() > 1 {
-        let parts: Vec<&str> = lines[1].split_whitespace().collect();
-        if parts.len() >= 3 {
-            let total = parts[1].parse::<u64>().unwrap_or(0) * 1024;
-            let used = parts[2].parse::<u64>().unwrap_or(0) * 1024;
-            return Ok((total, used));
-        }
-    }
-    Ok((0, 0))
-}
-
-#[cfg(not(target_os = "macos"))]
-/// メトリクスをマネージャーに送信
-async fn send_report(
-    client: &reqwest::Client,
-    manager_url: &str,
-    report: &MetricsReport,
-) -> Result<()> {
-    let url = format!("{}/api/metrics/report", manager_url);
-    let response = client
-        .post(&url)
-        .json(report)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to send report: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Manager returned error: {}",
-            response.status()
-        ));
-    }
-
-    Ok(())
 }

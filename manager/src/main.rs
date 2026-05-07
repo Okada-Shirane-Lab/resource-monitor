@@ -6,14 +6,37 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
+use tower_http::{cors::CorsLayer, services::ServeDir};
 use tracing::info;
+use tracing::level_filters::LevelFilter;
 
 use state::AppState;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum LogLevel {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<LogLevel> for LevelFilter {
+    fn from(value: LogLevel) -> Self {
+        match value {
+            LogLevel::Trace => LevelFilter::TRACE,
+            LogLevel::Debug => LevelFilter::DEBUG,
+            LogLevel::Info => LevelFilter::INFO,
+            LogLevel::Warn => LevelFilter::WARN,
+            LogLevel::Error => LevelFilter::ERROR,
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Resource Monitor Manager")]
@@ -25,17 +48,23 @@ struct Args {
     /// リッスンポート
     #[arg(short, long, default_value = "8081")]
     port: u16,
+
+    /// ログレベル
+    #[arg(long, value_enum, default_value_t = LogLevel::Info)]
+    log_level: LogLevel,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let args = Args::parse();
+    tracing_subscriber::fmt()
+        .with_max_level(LevelFilter::from(args.log_level))
+        .init();
     info!("Resource Monitor Manager starting...");
 
     // アプリケーション状態を初期化
     let state = Arc::new(RwLock::new(AppState::new()));
+    let static_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
 
     // ルートを設定
     let app = Router::new()
@@ -46,8 +75,8 @@ async fn main() -> Result<()> {
         .route("/api/machines/:machine_id", get(api::machines::get_machine))
         // ヘルスチェック
         .route("/health", get(api::health::health_check))
-        // Web UI
-        .route("/", get(api::web::index))
+        // Web UI の静的ファイル
+        .fallback_service(ServeDir::new(static_dir))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

@@ -1,6 +1,5 @@
 use shared::SystemMetrics;
 use std::collections::HashMap;
-use chrono::{Utc, Duration};
 
 /// マネージャーのアプリケーション状態
 pub struct AppState {
@@ -47,25 +46,5 @@ impl AppState {
         self.metrics
             .get(machine_id)
             .and_then(|history| history.last().cloned())
-    }
-
-    /// 特定マシンのメトリクス履歴を取得
-    pub fn get_machine_history(&self, machine_id: &str, minutes: i64) -> Vec<SystemMetrics> {
-        let cutoff = Utc::now() - Duration::minutes(minutes);
-        self.metrics
-            .get(machine_id)
-            .map(|history| {
-                history
-                    .iter()
-                    .filter(|m| m.timestamp > cutoff)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    /// 登録されているマシンのリスト
-    pub fn get_machine_ids(&self) -> Vec<String> {
-        self.metrics.keys().cloned().collect()
     }
 }

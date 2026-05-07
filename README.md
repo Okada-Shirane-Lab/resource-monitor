@@ -104,11 +104,14 @@ cargo run -p agent --release -- \
 #### Manager オプション
 - `--bind <ADDRESS>`: バインドアドレス（デフォルト: 0.0.0.0）
 - `--port <PORT>`: リッスンポート（デフォルト: 8081）
+- `--log-level <LEVEL>`: ログレベル（`trace`/`debug`/`info`/`warn`/`error`、デフォルト: `info`）
 
 #### Agent オプション
 - `--manager-url <URL>`: マネージャーサーバーの URL（デフォルト: http://localhost:8081）
-- `--interval <SECONDS>`: レポート間隔（秒）（デフォルト: 1）
+- `--interval <SECONDS>`: テレメトリ送信間隔（秒）（デフォルト: 10）
+  - Agent は 0.5秒ごとにデータ収集し、指定間隔内の平均値を送信
 - `--machine-id <ID>`: マシン識別子（指定しない場合はホスト名を使用）
+- `--log-level <LEVEL>`: ログレベル（`trace`/`debug`/`info`/`warn`/`error`、デフォルト: `info`）
 
 ## API エンドポイント
 

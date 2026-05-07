@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ja">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Resource Monitor</title>
+        <link rel="stylesheet" href="/style.css" />
+    </head>
+    <body>
+        <div class="container">
+            <h1>リソースモニター</h1>
+            <div id="content" class="loading">データを読み込み中...</div>
+            <div class="refresh-info">自動更新: 10秒ごと</div>
+        </div>
+
+        <script>
+            async function loadMetrics() {
+                try {
+                    const response = await fetch("/api/metrics/latest");
+                    const data = await response.json();
+
+                    if (data.success && data.data && data.data.machines) {
+                        renderMetrics(data.data.machines);
+                    } else {
+                        showError("メトリクスデータが利用できません");
+                    }
+                } catch (error) {
+                    showError(
+                        "メトリクスの読み込みに失敗しました: " + error.message,
+                    );
+                }
+            }
+
+            function renderMetrics(machines) {
+                if (machines.length === 0) {
+                    document.getElementById("content").innerHTML =
+                        '<div class="error-message">接続されたマシンがありません</div>';
+                    return;
+                }
+
+                let html = '<div class="machines-grid">';
+
+                machines.forEach((machine) => {
+                    const isOnline = isRecentlyUpdated(machine.timestamp);
+                    const statusClass = isOnline ? "online" : "offline";
+                    const statusText = isOnline ? "オンライン" : "オフライン";
+
+                    html += `
+                    <div class="machine-card">
+                        <div class="machine-header">
+                            <div class="machine-name">${escapeHtml(machine.hostname)}</div>
+                            <div class="machine-id">ID: ${escapeHtml(machine.machine_id)}</div>
+                            <span class="status ${statusClass}">${statusText}</span>
+                        </div>
+
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span>CPU</span>
+                                <span>${machine.cpu_usage.toFixed(1)}%</span>
+                            </div>
+                            <div class="metric-bar">
+                                <div class="metric-fill cpu" style="width: ${Math.min(machine.cpu_usage, 100)}%"></div>
+                            </div>
+                        </div>
+
+                        <div class="metric">
+                            <div class="metric-label">
+                                <span>メモリ</span>
+                                <span>${machine.memory_usage.toFixed(1)}%</span>
+                            </div>
+                            <div class="metric-bar">
+                                <div class="metric-fill memory" style="width: ${Math.min(machine.memory_usage, 100)}%"></div>
+                            </div>
+                            <div class="memory-details">
+                                ${formatBytes(machine.memory_used)} / ${formatBytes(machine.memory_total)}
+                            </div>
+                        </div>
+
+                        <div class="top-users-section">
+                            <div class="top-users-title">
+                                リソース占有ユーザー (上位3名)
+                            </div>
+                            ${
+                                machine.top_users &&
+                                machine.top_users.length > 0
+                                    ? `
+                                <div class="top-users-list">
+                                    ${machine.top_users
+                                        .map(
+                                            (user, idx) => `
+                                        <div class="user-card">
+                                            <div class="user-rank-name">${idx + 1}. ${escapeHtml(user.username)}</div>
+                                            <div class="user-stats">
+                                                <span>CPU: <span class="user-cpu">${user.cpu_percentage.toFixed(1)}%</span></span>
+                                                <span>メモリ: <span class="user-memory">${user.memory_percentage.toFixed(1)}%</span> (${formatBytes(user.memory_bytes)})</span>
+                                            </div>
+                                        </div>
+                                    `,
+                                        )
+                                        .join("")}
+                                </div>
+                            `
+                                    : '<div class="no-user-info">ユーザー情報なし</div>'
+                            }
+                        </div>
+
+                        <div class="timestamp">
+                            更新: ${new Date(machine.timestamp).toLocaleString("ja-JP")}
+                        </div>
+                    </div>
+                `;
+                });
+
+                html += "</div>";
+                document.getElementById("content").innerHTML = html;
+            }
+
+            function showError(message) {
+                document.getElementById("content").innerHTML =
+                    `<div class="error-message">${escapeHtml(message)}</div>`;
+            }
+
+            function isRecentlyUpdated(timestamp) {
+                const updated = new Date(timestamp);
+                const now = new Date();
+                const diffSeconds = (now - updated) / 1000;
+                return diffSeconds < 60; // 60秒以内
+            }
+
+            function formatBytes(bytes) {
+                if (bytes === 0) return "0 B";
+                const k = 1024;
+                const sizes = ["B", "KB", "MB", "GB", "TB", "PB"];
+                const i = Math.min(
+                    Math.floor(Math.log(bytes) / Math.log(k)),
+                    sizes.length - 1
+                );
+                return (
+                    parseFloat((bytes / Math.pow(k, i)).toFixed(2)) +
+                    " " +
+                    sizes[i]
+                );
+            }
+
+            function escapeHtml(text) {
+                const div = document.createElement("div");
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            loadMetrics();
+            setInterval(loadMetrics, 10_000);
+        </script>
+    </body>
+</html>
