@@ -71,6 +71,18 @@ cargo build -p agent --release
 cargo build -p manager --release
 ```
 
+### GitHub からインストール（Manager / Agent）
+
+```bash
+# Manager
+cargo install --git https://github.com/Okada-Shirane-Lab/resource-monitor manager
+
+# Agent
+cargo install --git https://github.com/Okada-Shirane-Lab/resource-monitor agent
+```
+
+インストール後は `resource-manager` / `resource-agent` コマンドで起動できます。
+
 ## 使用方法
 
 ### 1. マネージャーの起動
