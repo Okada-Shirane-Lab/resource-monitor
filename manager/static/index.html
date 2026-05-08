@@ -9,18 +9,29 @@
     <body>
         <div class="container">
             <h1>リソースモニター</h1>
+            <div class="filter-bar">
+                <input
+                    id="filter-input"
+                    class="filter-input"
+                    type="text"
+                    placeholder="計算機名 / ユーザー名でフィルタ"
+                />
+            </div>
             <div id="content" class="loading">データを読み込み中...</div>
             <div class="refresh-info">自動更新: 10秒ごと</div>
         </div>
 
         <script>
+            let latestMachines = [];
+
             async function loadMetrics() {
                 try {
                     const response = await fetch("/api/metrics/latest");
                     const data = await response.json();
 
                     if (data.success && data.data && data.data.machines) {
-                        renderMetrics(data.data.machines);
+                        latestMachines = data.data.machines;
+                        renderMetrics(latestMachines);
                     } else {
                         showError("メトリクスデータが利用できません");
                     }
@@ -32,15 +43,45 @@
             }
 
             function renderMetrics(machines) {
+                const filterInput = document.getElementById("filter-input");
+                const filterText = (filterInput?.value || "").trim().toLowerCase();
+
                 if (machines.length === 0) {
                     document.getElementById("content").innerHTML =
                         '<div class="error-message">接続されたマシンがありません</div>';
                     return;
                 }
 
+                const filteredMachines = machines
+                    .filter((machine) => {
+                        if (!filterText) return true;
+
+                        const machineName = (machine.hostname || "").toLowerCase();
+                        const hasMachineMatch = machineName.includes(filterText);
+
+                        const hasUserMatch = (machine.top_users || []).some((user) =>
+                            (user.username || "").toLowerCase().includes(filterText),
+                        );
+
+                        return hasMachineMatch || hasUserMatch;
+                    })
+                    .sort((a, b) =>
+                        (a.hostname || "").localeCompare(
+                            b.hostname || "",
+                            "ja",
+                            { sensitivity: "base" },
+                        ),
+                    );
+
+                if (filteredMachines.length === 0) {
+                    document.getElementById("content").innerHTML =
+                        '<div class="error-message">条件に一致する計算機がありません</div>';
+                    return;
+                }
+
                 let html = '<div class="machines-grid">';
 
-                machines.forEach((machine) => {
+                filteredMachines.forEach((machine) => {
                     const isOnline = isRecentlyUpdated(machine.timestamp);
                     const statusClass = isOnline ? "online" : "offline";
                     const statusText = isOnline ? "オンライン" : "オフライン";
@@ -147,6 +188,10 @@
                 div.textContent = text;
                 return div.innerHTML;
             }
+
+            document
+                .getElementById("filter-input")
+                .addEventListener("input", () => renderMetrics(latestMachines));
 
             loadMetrics();
             setInterval(loadMetrics, 10_000);
