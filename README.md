@@ -117,6 +117,9 @@ cargo run -p agent --release -- \
 - `--bind <ADDRESS>`: バインドアドレス（デフォルト: 0.0.0.0）
 - `--port <PORT>`: リッスンポート（デフォルト: 8081）
 - `--log-level <LEVEL>`: ログレベル（`trace`/`debug`/`info`/`warn`/`error`、デフォルト: `info`）
+- `--scan-subnet <PREFIX>`: MAC収集対象サブネット（デフォルト: `172.20.10`）
+- `--mac-user-csv <PATH>`: `mac,username` の対応CSVファイルパス
+  - Manager がバックグラウンドで定期収集し、Webリクエスト時はキャッシュを返す
 
 #### Agent オプション
 - `--manager-url <URL>`: マネージャーサーバーの URL（デフォルト: http://localhost:8081）
@@ -124,6 +127,22 @@ cargo run -p agent --release -- \
   - Agent は 0.5秒ごとにデータ収集し、指定間隔内の平均値を送信
 - `--machine-id <ID>`: マシン識別子（指定しない場合はホスト名を使用）
 - `--log-level <LEVEL>`: ログレベル（`trace`/`debug`/`info`/`warn`/`error`、デフォルト: `info`）
+
+### MACとユーザー名CSVの例
+
+```csv
+mac,username
+aa:bb:cc:dd:ee:ff,alice
+11:22:33:44:55:66,bob
+```
+
+Manager 起動例:
+
+```bash
+resource-manager \
+  --scan-subnet 172.20.10 \
+  --mac-user-csv /path/to/mac_users.csv
+```
 
 ## API エンドポイント
 
@@ -183,6 +202,14 @@ GET /api/machines
 ```
 GET /api/machines/{machine_id}
 ```
+
+#### ネットワークユーザー一覧
+```
+GET /api/network/users
+```
+
+- 返却内容はユーザー名・在席/不在です
+- MACアドレス一覧はAPIレスポンスに含めません
 
 ### ヘルスチェック
 ```

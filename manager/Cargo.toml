@@ -26,3 +26,4 @@ chrono.workspace = true
 clap.workspace = true
 dotenv.workspace = true
 uuid.workspace = true
+libc = "0.2"

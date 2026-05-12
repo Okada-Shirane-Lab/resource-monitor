@@ -8,7 +8,17 @@
     </head>
     <body>
         <div class="container">
-            <h1>リソースモニター</h1>
+            <h1>Shirane Lab Monitor</h1>
+            <div class="network-section">
+                <details class="network-details">
+                    <summary class="network-summary">
+                        きょうの研究室メンバー
+                    </summary>
+                    <div id="network-content" class="network-loading">
+                        ネットワーク情報を読み込み中...
+                    </div>
+                </details>
+            </div>
             <div class="filter-bar">
                 <input
                     id="filter-input"
@@ -42,9 +52,29 @@
                 }
             }
 
+            async function loadNetworkUsers() {
+                try {
+                    const response = await fetch("/api/network/users");
+                    const data = await response.json();
+
+                    if (data.success && Array.isArray(data.data)) {
+                        renderNetworkUsers(data.data);
+                    } else {
+                        showNetworkError("ネットワーク情報を取得できません");
+                    }
+                } catch (error) {
+                    showNetworkError(
+                        "ネットワーク情報の取得に失敗しました: " +
+                            error.message,
+                    );
+                }
+            }
+
             function renderMetrics(machines) {
                 const filterInput = document.getElementById("filter-input");
-                const filterText = (filterInput?.value || "").trim().toLowerCase();
+                const filterText = (filterInput?.value || "")
+                    .trim()
+                    .toLowerCase();
 
                 if (machines.length === 0) {
                     document.getElementById("content").innerHTML =
@@ -56,11 +86,17 @@
                     .filter((machine) => {
                         if (!filterText) return true;
 
-                        const machineName = (machine.hostname || "").toLowerCase();
-                        const hasMachineMatch = machineName.includes(filterText);
+                        const machineName = (
+                            machine.hostname || ""
+                        ).toLowerCase();
+                        const hasMachineMatch =
+                            machineName.includes(filterText);
 
-                        const hasUserMatch = (machine.top_users || []).some((user) =>
-                            (user.username || "").toLowerCase().includes(filterText),
+                        const hasUserMatch = (machine.top_users || []).some(
+                            (user) =>
+                                (user.username || "")
+                                    .toLowerCase()
+                                    .includes(filterText),
                         );
 
                         return hasMachineMatch || hasUserMatch;
@@ -84,14 +120,16 @@
                 filteredMachines.forEach((machine) => {
                     const isOnline = isRecentlyUpdated(machine.timestamp);
                     const statusClass = isOnline ? "online" : "offline";
-                    const statusText = isOnline ? "オンライン" : "オフライン";
+                    const statusText = isOnline ? "Online" : "Offline";
 
                     html += `
                     <div class="machine-card">
                         <div class="machine-header">
-                            <div class="machine-name">${escapeHtml(machine.hostname)}</div>
+                            <div class="machine-title-row">
+                                <div class="machine-name">${escapeHtml(machine.hostname)}</div>
+                                <span class="status ${statusClass}">${statusText}</span>
+                            </div>
                             <div class="machine-id">ID: ${escapeHtml(machine.machine_id)}</div>
-                            <span class="status ${statusClass}">${statusText}</span>
                         </div>
 
                         <div class="metric">
@@ -118,9 +156,6 @@
                         </div>
 
                         <div class="top-users-section">
-                            <div class="top-users-title">
-                                リソース占有ユーザー (上位3名)
-                            </div>
                             ${
                                 machine.top_users &&
                                 machine.top_users.length > 0
@@ -130,10 +165,19 @@
                                         .map(
                                             (user, idx) => `
                                         <div class="user-card">
-                                            <div class="user-rank-name">${idx + 1}. ${escapeHtml(user.username)}</div>
-                                            <div class="user-stats">
-                                                <span>CPU: <span class="user-cpu">${user.cpu_percentage.toFixed(1)}%</span></span>
-                                                <span>メモリ: <span class="user-memory">${user.memory_percentage.toFixed(1)}%</span> (${formatBytes(user.memory_bytes)})</span>
+                                            <div class="user-row">
+                                                <div class="user-rank-name" data-rank="${idx + 1}">${escapeHtml(user.username)}</div>
+                                                <div class="user-stats">
+                                                    <div class="user-stat-line">
+                                                        <span class="user-stat-label">CPU:</span>
+                                                        <span class="user-cpu">${user.cpu_percentage.toFixed(1)}%</span>
+                                                    </div>
+                                                    <div class="user-stat-line">
+                                                        <span class="user-stat-label">メモリ:</span>
+                                                        <span class="user-memory">${user.memory_percentage.toFixed(1)}%</span>
+                                                        <span class="user-memory-bytes">(${formatBytes(user.memory_bytes)})</span>
+                                                    </div>
+                                                </div>
                                             </div>
                                         </div>
                                     `,
@@ -161,6 +205,38 @@
                     `<div class="error-message">${escapeHtml(message)}</div>`;
             }
 
+            function renderNetworkUsers(users) {
+                const container = document.getElementById("network-content");
+                if (!users || users.length === 0) {
+                    container.innerHTML =
+                        '<div class="network-empty">対応するユーザーは見つかりませんでした</div>';
+                    return;
+                }
+
+                const rows = users
+                    .map((user) => {
+                        const statusClass =
+                            user.status === "online"
+                                ? "network-status-online"
+                                : "network-status-offline";
+                        const statusText =
+                            user.status === "online" ? "在席中" : "不在中";
+
+                        return `<li>
+                            <span class="network-user-name">${escapeHtml(user.username)}</span>
+                            <span class="${statusClass}">${statusText}</span>
+                        </li>`;
+                    })
+                    .join("");
+
+                container.innerHTML = `<ul class="network-user-list">${rows}</ul>`;
+            }
+
+            function showNetworkError(message) {
+                document.getElementById("network-content").innerHTML =
+                    `<div class="error-message">${escapeHtml(message)}</div>`;
+            }
+
             function isRecentlyUpdated(timestamp) {
                 const updated = new Date(timestamp);
                 const now = new Date();
@@ -174,7 +250,7 @@
                 const sizes = ["B", "KB", "MB", "GB", "TB", "PB"];
                 const i = Math.min(
                     Math.floor(Math.log(bytes) / Math.log(k)),
-                    sizes.length - 1
+                    sizes.length - 1,
                 );
                 return (
                     parseFloat((bytes / Math.pow(k, i)).toFixed(2)) +
@@ -193,8 +269,29 @@
                 .getElementById("filter-input")
                 .addEventListener("input", () => renderMetrics(latestMachines));
 
+            const networkSection = document.querySelector(".network-section");
+            const networkDetails =
+                networkSection?.querySelector(".network-details");
+            if (
+                networkSection &&
+                networkDetails instanceof HTMLDetailsElement
+            ) {
+                networkSection.addEventListener("click", (event) => {
+                    const target = event.target;
+                    if (
+                        target instanceof HTMLElement &&
+                        target.closest(".network-summary")
+                    ) {
+                        return;
+                    }
+                    networkDetails.open = !networkDetails.open;
+                });
+            }
+
             loadMetrics();
+            loadNetworkUsers();
             setInterval(loadMetrics, 10_000);
+            setInterval(loadNetworkUsers, 10_000);
         </script>
     </body>
 </html>

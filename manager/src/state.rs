@@ -1,5 +1,19 @@
+use serde::Serialize;
 use shared::SystemMetrics;
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Clone)]
+pub struct NetworkConfig {
+    pub subnet_prefix: String,
+    pub mac_user_csv: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkUserPresence {
+    pub username: String,
+    pub status: String,
+}
 
 /// マネージャーのアプリケーション状態
 pub struct AppState {
@@ -7,13 +21,19 @@ pub struct AppState {
     metrics: HashMap<String, Vec<SystemMetrics>>,
     /// メトリクスの最大保持数（マシンあたり）
     max_history: usize,
+    /// ネットワーク走査設定
+    network: NetworkConfig,
+    /// ネットワーク上で検出されたユーザー一覧（キャッシュ）
+    network_users: Vec<NetworkUserPresence>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(network: NetworkConfig) -> Self {
         Self {
             metrics: HashMap::new(),
             max_history: 288, // 48時間分（10秒間隔で報告された場合）
+            network,
+            network_users: Vec::new(),
         }
     }
 
@@ -46,5 +66,17 @@ impl AppState {
         self.metrics
             .get(machine_id)
             .and_then(|history| history.last().cloned())
+    }
+
+    pub fn network_config(&self) -> &NetworkConfig {
+        &self.network
+    }
+
+    pub fn set_network_users(&mut self, users: Vec<NetworkUserPresence>) {
+        self.network_users = users;
+    }
+
+    pub fn network_users(&self) -> Vec<NetworkUserPresence> {
+        self.network_users.clone()
     }
 }

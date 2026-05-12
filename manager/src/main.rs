@@ -52,6 +52,14 @@ struct Args {
     /// ログレベル
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     log_level: LogLevel,
+
+    /// 走査対象サブネット（末尾オクテットを除いたプレフィックス）
+    #[arg(long, default_value = "172.20.10")]
+    scan_subnet: String,
+
+    /// MACアドレスとユーザー名の対応CSVファイル
+    #[arg(long)]
+    mac_user_csv: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -63,7 +71,14 @@ async fn main() -> Result<()> {
     info!("Resource Monitor Manager starting...");
 
     // アプリケーション状態を初期化
-    let state = Arc::new(RwLock::new(AppState::new()));
+    let state = Arc::new(RwLock::new(AppState::new(state::NetworkConfig {
+        subnet_prefix: args.scan_subnet.clone(),
+        mac_user_csv: args.mac_user_csv.clone(),
+    })));
+    let network_state = state.clone();
+    tokio::spawn(async move {
+        api::network::run_network_collector(network_state).await;
+    });
     let static_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
 
     // ルートを設定
@@ -73,6 +88,7 @@ async fn main() -> Result<()> {
         .route("/api/metrics/latest", get(api::metrics::get_latest))
         .route("/api/machines", get(api::machines::list_machines))
         .route("/api/machines/:machine_id", get(api::machines::get_machine))
+        .route("/api/network/users", get(api::network::list_users))
         // ヘルスチェック
         .route("/health", get(api::health::health_check))
         // Web UI の静的ファイル
