@@ -118,7 +118,7 @@ cargo run -p agent --release -- \
 - `--port <PORT>`: リッスンポート（デフォルト: 8081）
 - `--log-level <LEVEL>`: ログレベル（`trace`/`debug`/`info`/`warn`/`error`、デフォルト: `info`）
 - `--scan-subnet <PREFIX>`: MAC収集対象サブネット（デフォルト: `172.20.10`）
-- `--mac-user-csv <PATH>`: `mac,username` の対応CSVファイルパス
+- `--mac-user-csv <PATH>`: `mac,username,grade` の対応CSVファイルパス
   - Manager がバックグラウンドで定期収集し、Webリクエスト時はキャッシュを返す
 
 #### Agent オプション
@@ -131,9 +131,9 @@ cargo run -p agent --release -- \
 ### MACとユーザー名CSVの例
 
 ```csv
-mac,username
-aa:bb:cc:dd:ee:ff,alice
-11:22:33:44:55:66,bob
+mac,username,grade
+aa:bb:cc:dd:ee:ff,alice,M
+11:22:33:44:55:66,bob,D
 ```
 
 Manager 起動例:
@@ -208,7 +208,7 @@ GET /api/machines/{machine_id}
 GET /api/network/users
 ```
 
-- 返却内容はユーザー名・在席/不在です
+- 返却内容は `data.grade_counts`（学年ごとの在席人数/総人数）です
 - MACアドレス一覧はAPIレスポンスに含めません
 
 ### ヘルスチェック

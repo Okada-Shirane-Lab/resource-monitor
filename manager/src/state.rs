@@ -10,9 +10,16 @@ pub struct NetworkConfig {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct NetworkUserPresence {
-    pub username: String,
-    pub status: String,
+pub struct NetworkGradeCount {
+    pub grade: String,
+    pub online: usize,
+    pub offline: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct NetworkUsersSnapshot {
+    pub grade_counts: Vec<NetworkGradeCount>,
 }
 
 /// マネージャーのアプリケーション状態
@@ -23,8 +30,8 @@ pub struct AppState {
     max_history: usize,
     /// ネットワーク走査設定
     network: NetworkConfig,
-    /// ネットワーク上で検出されたユーザー一覧（キャッシュ）
-    network_users: Vec<NetworkUserPresence>,
+    /// ネットワークユーザー情報（キャッシュ）
+    network_snapshot: NetworkUsersSnapshot,
 }
 
 impl AppState {
@@ -33,7 +40,7 @@ impl AppState {
             metrics: HashMap::new(),
             max_history: 288, // 48時間分（10秒間隔で報告された場合）
             network,
-            network_users: Vec::new(),
+            network_snapshot: NetworkUsersSnapshot::default(),
         }
     }
 
@@ -72,11 +79,11 @@ impl AppState {
         &self.network
     }
 
-    pub fn set_network_users(&mut self, users: Vec<NetworkUserPresence>) {
-        self.network_users = users;
+    pub fn set_network_snapshot(&mut self, snapshot: NetworkUsersSnapshot) {
+        self.network_snapshot = snapshot;
     }
 
-    pub fn network_users(&self) -> Vec<NetworkUserPresence> {
-        self.network_users.clone()
+    pub fn network_snapshot(&self) -> NetworkUsersSnapshot {
+        self.network_snapshot.clone()
     }
 }

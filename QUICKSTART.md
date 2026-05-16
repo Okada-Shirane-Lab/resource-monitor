@@ -102,7 +102,7 @@ POST /api/metrics/report          # メトリクスレポート受信
 GET  /api/metrics/latest          # 最新メトリクス取得
 GET  /api/machines                # マシン一覧
 GET  /api/machines/{machine_id}   # マシン詳細
-GET  /api/network/users           # ネットワーク内で対応づいたユーザー一覧
+GET  /api/network/users           # ユーザー在席情報 + 学年ごとの人数
 ```
 
 ## Rocky Linux 8 へのデプロイ

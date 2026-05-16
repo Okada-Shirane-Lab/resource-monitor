@@ -10,14 +10,10 @@
         <div class="container">
             <h1>Shirane Lab Monitor</h1>
             <div class="network-section">
-                <details class="network-details">
-                    <summary class="network-summary">
-                        きょうの研究室メンバー
-                    </summary>
-                    <div id="network-content" class="network-loading">
-                        ネットワーク情報を読み込み中...
-                    </div>
-                </details>
+                <h2 class="network-title">きょうの研究室メンバー</h2>
+                <div id="network-content" class="network-loading">
+                    ネットワーク情報を読み込み中...
+                </div>
             </div>
             <div class="filter-bar">
                 <input
@@ -57,8 +53,12 @@
                     const response = await fetch("/api/network/users");
                     const data = await response.json();
 
-                    if (data.success && Array.isArray(data.data)) {
-                        renderNetworkUsers(data.data);
+                    if (
+                        data.success &&
+                        data.data &&
+                        Array.isArray(data.data.grade_counts)
+                    ) {
+                        renderNetworkUsers(data.data.grade_counts);
                     } else {
                         showNetworkError("ネットワーク情報を取得できません");
                     }
@@ -205,31 +205,46 @@
                     `<div class="error-message">${escapeHtml(message)}</div>`;
             }
 
-            function renderNetworkUsers(users) {
+            function renderNetworkUsers(gradeCounts) {
                 const container = document.getElementById("network-content");
-                if (!users || users.length === 0) {
+                if (!gradeCounts || gradeCounts.length === 0) {
                     container.innerHTML =
                         '<div class="network-empty">対応するユーザーは見つかりませんでした</div>';
                     return;
                 }
 
-                const rows = users
-                    .map((user) => {
-                        const statusClass =
-                            user.status === "online"
-                                ? "network-status-online"
-                                : "network-status-offline";
-                        const statusText =
-                            user.status === "online" ? "在席中" : "不在中";
+                const gradePriority = (grade) => {
+                    const normalized = String(grade || "")
+                        .trim()
+                        .toUpperCase();
+                    if (normalized === "B") return 0;
+                    if (normalized === "M") return 1;
+                    if (normalized === "D") return 2;
+                    return 99;
+                };
 
-                        return `<li>
-                            <span class="network-user-name">${escapeHtml(user.username)}</span>
-                            <span class="${statusClass}">${statusText}</span>
-                        </li>`;
-                    })
-                    .join("");
+                const orderedGrades = [...gradeCounts].sort((a, b) => {
+                    const priorityDiff =
+                        gradePriority(a.grade) - gradePriority(b.grade);
+                    if (priorityDiff !== 0) return priorityDiff;
+                    return String(a.grade || "").localeCompare(
+                        String(b.grade || ""),
+                        "ja",
+                        { sensitivity: "base" },
+                    );
+                });
 
-                container.innerHTML = `<ul class="network-user-list">${rows}</ul>`;
+                container.innerHTML = `<div class="network-grade-summary">
+                    ${orderedGrades
+                        .map(
+                            (
+                                grade,
+                            ) => `<div class="network-grade-card" data-grade="${escapeHtml(String(grade.grade || "").trim() || "X")}">
+                                <div class="network-grade-count">${grade.online}<span class="network-grade-unit">/${grade.total}人在席</span></div>
+                            </div>`,
+                        )
+                        .join("")}
+                </div>`;
             }
 
             function showNetworkError(message) {
@@ -268,25 +283,6 @@
             document
                 .getElementById("filter-input")
                 .addEventListener("input", () => renderMetrics(latestMachines));
-
-            const networkSection = document.querySelector(".network-section");
-            const networkDetails =
-                networkSection?.querySelector(".network-details");
-            if (
-                networkSection &&
-                networkDetails instanceof HTMLDetailsElement
-            ) {
-                networkSection.addEventListener("click", (event) => {
-                    const target = event.target;
-                    if (
-                        target instanceof HTMLElement &&
-                        target.closest(".network-summary")
-                    ) {
-                        return;
-                    }
-                    networkDetails.open = !networkDetails.open;
-                });
-            }
 
             loadMetrics();
             loadNetworkUsers();

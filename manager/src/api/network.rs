@@ -1,6 +1,6 @@
 use axum::{extract::State, Json};
 use shared::ApiResponse;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(target_os = "macos")]
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::error;
 
-use crate::state::{AppState, NetworkUserPresence};
+use crate::state::{AppState, NetworkGradeCount, NetworkUsersSnapshot};
 
 pub const NETWORK_SCAN_INTERVAL_SECS: u64 = 10;
 const OFFLINE_FAIL_THRESHOLD: u32 = 3;
@@ -18,16 +18,16 @@ const LIVENESS_PORTS: [u16; 8] = [22, 53, 80, 123, 443, 445, 631, 62078];
 
 pub async fn list_users(
     State(state): State<Arc<RwLock<AppState>>>,
-) -> Json<ApiResponse<Vec<NetworkUserPresence>>> {
-    let users = {
+) -> Json<ApiResponse<NetworkUsersSnapshot>> {
+    let snapshot = {
         let state = state.read().await;
-        state.network_users()
+        state.network_snapshot()
     };
-    Json(ApiResponse::success(users))
+    Json(ApiResponse::success(snapshot))
 }
 
 pub async fn run_network_collector(state: Arc<RwLock<AppState>>) {
-    let mut known_ip_to_user: HashMap<String, String> = HashMap::new();
+    let mut known_ip_to_user: HashMap<String, CsvUserEntry> = HashMap::new();
     let mut fail_counts: HashMap<String, u32> = HashMap::new();
 
     loop {
@@ -47,7 +47,7 @@ pub async fn run_network_collector(state: Arc<RwLock<AppState>>) {
             },
             None => HashMap::new(),
         };
-        let csv_usernames: BTreeSet<String> = csv_mapping.values().cloned().collect();
+        let csv_users = build_csv_users(&csv_mapping);
 
         probe_subnet(&subnet_prefix).await;
         tokio::time::sleep(std::time::Duration::from_millis(ARP_SETTLE_MS)).await;
@@ -70,8 +70,8 @@ pub async fn run_network_collector(state: Arc<RwLock<AppState>>) {
             if !ip.starts_with(&format!("{subnet_prefix}.")) {
                 continue;
             }
-            if let Some(username) = csv_mapping.get(&normalize_mac(mac)) {
-                known_ip_to_user.insert(ip.clone(), username.clone());
+            if let Some(user) = csv_mapping.get(&normalize_mac(mac)) {
+                known_ip_to_user.insert(ip.clone(), user.clone());
                 fail_counts
                     .entry(ip.clone())
                     .or_insert(OFFLINE_FAIL_THRESHOLD);
@@ -92,13 +92,16 @@ pub async fn run_network_collector(state: Arc<RwLock<AppState>>) {
         let presence = build_user_presence(
             &known_ip_to_user,
             &fail_counts,
-            &csv_usernames,
+            &csv_users,
             OFFLINE_FAIL_THRESHOLD,
         );
+        let grade_counts = build_grade_counts(&presence);
 
         {
             let mut state = state.write().await;
-            state.set_network_users(presence);
+            state.set_network_snapshot(NetworkUsersSnapshot {
+                grade_counts,
+            });
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(NETWORK_SCAN_INTERVAL_SECS)).await;
@@ -106,22 +109,35 @@ pub async fn run_network_collector(state: Arc<RwLock<AppState>>) {
 }
 
 fn build_user_presence(
-    known_ip_to_user: &HashMap<String, String>,
+    known_ip_to_user: &HashMap<String, CsvUserEntry>,
     fail_counts: &HashMap<String, u32>,
-    csv_usernames: &BTreeSet<String>,
+    csv_users: &BTreeMap<String, Option<String>>,
     offline_threshold: u32,
-) -> Vec<NetworkUserPresence> {
+) -> Vec<UserPresence> {
     #[derive(Default)]
     struct UserAgg {
+        grade: Option<String>,
         any_online: bool,
     }
 
     let mut users: BTreeMap<String, UserAgg> = BTreeMap::new();
-    for username in csv_usernames {
-        users.entry(username.clone()).or_default();
+    for (username, grade) in csv_users {
+        users.insert(
+            username.clone(),
+            UserAgg {
+                grade: grade.clone(),
+                any_online: false,
+            },
+        );
     }
-    for (ip, username) in known_ip_to_user {
-        let agg = users.entry(username.clone()).or_default();
+    for (ip, user) in known_ip_to_user {
+        let agg = users.entry(user.username.clone()).or_insert_with(|| UserAgg {
+            grade: user.grade.clone(),
+            any_online: false,
+        });
+        if agg.grade.is_none() && user.grade.is_some() {
+            agg.grade = user.grade.clone();
+        }
 
         let fails = fail_counts
             .get(ip)
@@ -130,13 +146,12 @@ fn build_user_presence(
         if fails < offline_threshold {
             agg.any_online = true;
         }
-
     }
 
     users
         .into_iter()
-        .map(|(username, agg)| NetworkUserPresence {
-            username,
+        .map(|(_, agg)| UserPresence {
+            grade: agg.grade,
             status: if agg.any_online {
                 "online".to_string()
             } else {
@@ -146,7 +161,63 @@ fn build_user_presence(
         .collect()
 }
 
-fn load_mac_user_map(path: &Path) -> anyhow::Result<HashMap<String, String>> {
+fn build_grade_counts(users: &[UserPresence]) -> Vec<NetworkGradeCount> {
+    let mut counts: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for user in users {
+        let grade = user
+            .grade
+            .as_deref()
+            .map(str::trim)
+            .filter(|grade| !grade.is_empty())
+            .unwrap_or("未設定")
+            .to_string();
+        let entry = counts.entry(grade).or_insert((0, 0));
+        if user.status == "online" {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|(grade, (online, offline))| NetworkGradeCount {
+            grade,
+            online,
+            offline,
+            total: online + offline,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct CsvUserEntry {
+    username: String,
+    grade: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct UserPresence {
+    grade: Option<String>,
+    status: String,
+}
+
+fn build_csv_users(csv_mapping: &HashMap<String, CsvUserEntry>) -> BTreeMap<String, Option<String>> {
+    let mut users: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for entry in csv_mapping.values() {
+        users
+            .entry(entry.username.clone())
+            .and_modify(|grade| {
+                if grade.is_none() && entry.grade.is_some() {
+                    *grade = entry.grade.clone();
+                }
+            })
+            .or_insert_with(|| entry.grade.clone());
+    }
+    users
+}
+
+fn load_mac_user_map(path: &Path) -> anyhow::Result<HashMap<String, CsvUserEntry>> {
     let content = std::fs::read_to_string(path)?;
     let mut map = HashMap::new();
 
@@ -163,12 +234,22 @@ fn load_mac_user_map(path: &Path) -> anyhow::Result<HashMap<String, String>> {
 
         let mac = normalize_mac(columns[0]);
         let username = columns[1];
+        let grade = columns
+            .get(2)
+            .map(|grade| grade.trim())
+            .filter(|grade| !grade.is_empty());
 
         if mac == "mac" || username.eq_ignore_ascii_case("username") {
             continue;
         }
         if !mac.is_empty() && !username.is_empty() {
-            map.insert(mac, username.to_string());
+            map.insert(
+                mac,
+                CsvUserEntry {
+                    username: username.to_string(),
+                    grade: grade.map(|grade| grade.to_string()),
+                },
+            );
         }
     }
 

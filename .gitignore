@@ -20,3 +20,6 @@ Cargo.lock
 # OS
 Thumbs.db
 .DS_Store
+
+# Config
+user.csv
